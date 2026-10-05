@@ -1,0 +1,148 @@
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+import json
+
+# Website aur backend isi folder mein rakho.
+Path(__file__).resolve().parent
+import os
+os.chdir(Path(__file__).resolve().parent)
+
+GROUPS = ["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"]
+
+# Yeh fictional demo stock hai.
+HOSPITALS = {
+    "Hospital A": {
+        "location": "Central District, Ranchi",
+        "stock": {
+            "A+": 18, "A-": 7, "B+": 22, "B-": 8,
+            "O+": 25, "O-": 5, "AB+": 12, "AB-": 4
+        }
+    },
+    "Hospital B": {
+        "location": "North Metro, Ranchi",
+        "stock": {
+            "A+": 32, "A-": 14, "B+": 35, "B-": 16,
+            "O+": 40, "O-": 18, "AB+": 20, "AB-": 10
+        }
+    },
+    "Hospital C": {
+        "location": "West Valley, Ranchi",
+        "stock": {
+            "A+": 15, "A-": 9, "B+": 19, "B-": 11,
+            "O+": 21, "O-": 8, "AB+": 13, "AB-": 6
+        }
+    }
+}
+
+# Sample rozana demand. Yeh bhi demo numbers hain.
+DAILY_DEMAND = {
+    "A+": 6, "A-": 2, "B+": 7, "B-": 2,
+    "O+": 9, "O-": 4, "AB+": 3, "AB-": 1
+}
+
+HOSPITAL_DEMAND_MULTIPLIER = {
+    "Hospital A": 1.0,
+    "Hospital B": 1.2,
+    "Hospital C": 0.9
+}
+
+
+def build_inventory():
+    rows = []
+
+    for hospital_name, hospital in HOSPITALS.items():
+        for group in GROUPS:
+            units = hospital["stock"][group]
+            daily_demand = (
+                DAILY_DEMAND[group]
+                * HOSPITAL_DEMAND_MULTIPLIER[hospital_name]
+            )
+
+            reserve_hours = units / daily_demand * 24
+
+            if reserve_hours < 18:
+                risk = 99
+            elif reserve_hours < 36:
+                risk = 81
+            elif reserve_hours < 48:
+                risk = 59
+            else:
+                risk = 32
+
+            rows.append({
+                "hospital": hospital_name,
+                "location": hospital["location"],
+                "group": group,
+                "reserve": round(reserve_hours, 1),
+                "units": units,
+                "demand": round(daily_demand * 7),
+                "risk": risk
+            })
+
+    return rows
+
+
+class Handler(SimpleHTTPRequestHandler):
+    def send_json(self, data, status=200):
+        body = json.dumps(data).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/api/inventory":
+            self.send_json(build_inventory())
+            return
+
+        # Baaki requests se index.html, CSS aur JS serve honge.
+        super().do_GET()
+
+    def do_POST(self):
+        if self.path != "/api/transfer":
+            self.send_json({"error": "Route not found"}, 404)
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            data = json.loads(self.rfile.read(length))
+
+            group = data["group"]
+            source = data["fromHospital"]
+            destination = data["toHospital"]
+            units = int(data["units"])
+
+            if group not in GROUPS:
+                self.send_json({"error": "Unknown blood group"}, 400)
+                return
+
+            if source not in HOSPITALS or destination not in HOSPITALS:
+                self.send_json({"error": "Unknown hospital"}, 400)
+                return
+
+            if source == destination or units <= 0:
+                self.send_json({"error": "Check transfer details"}, 400)
+                return
+
+            if HOSPITALS[source]["stock"][group] < units:
+                self.send_json({"error": "Not enough stock at source"}, 400)
+                return
+
+            HOSPITALS[source]["stock"][group] -= units
+            HOSPITALS[destination]["stock"][group] += units
+
+            self.send_json({
+                "message": f"{units} units of {group} transferred",
+                "inventory": build_inventory()
+            })
+
+        except (KeyError, ValueError, json.JSONDecodeError):
+            self.send_json({"error": "Invalid request data"}, 400)
+
+
+server = ThreadingHTTPServer(("127.0.0.1", 8000), Handler)
+print("Demo running at http://127.0.0.1:8000")
+print("Press Ctrl+C to stop the server.")
+server.serve_forever()
